@@ -6,6 +6,9 @@ import { FacebookData, FacebookLoginResponse, AccountsResponse, FacebookPage, Po
 const FACEBOOK_POST_FIELDS = 'id,message,story,created_time,permalink_url,full_picture,shares,reactions.summary(true),comments.summary(true).limit(5){message,created_time,from},insights.metric(post_impressions_unique,post_engagements)';
 const INSTAGRAM_MEDIA_FIELDS = 'caption,media_type,media_url,permalink,timestamp,like_count,comments_count';
 
+// Función para no saturar la API (Rate Limiting)
+const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
 export const useFacebook = () => {
     const [data, setData] = useState<FacebookData | null>(null);
     const [loading, setLoading] = useState(false);
@@ -53,6 +56,120 @@ export const useFacebook = () => {
         };
     }, []);
 
+    // Helper para obtener fecha uniformemente
+    const getDateFromPost = (post: any, type: 'facebook' | 'instagram') => {
+        const dateStr = type === 'facebook' ? post.created_time : post.timestamp;
+        return new Date(dateStr);
+    };
+
+    /**
+     * Carga recursiva automática: Sigue pidiendo páginas hasta llegar a untilDate
+     */
+    const fetchPostsByDate = useCallback(async (type: 'facebook' | 'instagram', untilDate: Date) => {
+        if (!process.env.NEXT_PUBLIC_FACEBOOK_APP_ID || !pageAccessToken) return;
+        
+        const targetId = type === 'facebook' ? pageId : instagramId;
+        if (!targetId) return;
+
+        setLoading(true);
+        let hasMore = true;
+        
+        // Empezamos desde el último cursor conocido para no re-descargar lo que ya tenemos
+        let nextCursor: string | undefined = undefined;
+        if (data) {
+            const currentPaging = type === 'facebook' ? data.posts?.paging : data.instagram_data?.media?.paging;
+            nextCursor = currentPaging?.cursors?.after;
+        }
+
+        const endpoint = `/${targetId}/${type === 'facebook' ? 'posts' : 'media'}`;
+        const fields = type === 'facebook' ? FACEBOOK_POST_FIELDS : INSTAGRAM_MEDIA_FIELDS;
+        
+        let safetyCounter = 0; // Evitar bucles infinitos
+
+        try {
+            while (hasMore && safetyCounter < 20) { // Máximo 20 páginas seguidas (aprox 500 posts) por seguridad
+                safetyCounter++;
+                
+                await new Promise<void>((resolve) => {
+                    window.FB.api(
+                        endpoint,
+                        'GET',
+                        {
+                            access_token: pageAccessToken,
+                            limit: 25, // Lote pequeño = Respuesta rápida y sin error
+                            after: nextCursor,
+                            fields: fields
+                        },
+                        (response: PaginationResponse) => {
+                            if (!response || response.error) {
+                                console.error("Error en fetch recursivo:", response);
+                                hasMore = false;
+                                resolve();
+                                return;
+                            }
+
+                            const newItems = response.data;
+                            if (!newItems || newItems.length === 0) {
+                                hasMore = false;
+                                resolve();
+                                return;
+                            }
+
+                            // Chequeamos fechas
+                            const lastItem = newItems[newItems.length - 1];
+                            const lastDate = getDateFromPost(lastItem, type);
+
+                            if (lastDate < untilDate) {
+                                hasMore = false; // Ya llegamos a la fecha objetivo
+                            }
+
+                            // Actualizamos estado acumulando datos
+                            setData(prevData => {
+                                if (!prevData) return null;
+                                const newData = { ...prevData };
+
+                                if (type === 'facebook') {
+                                    // Filtrar duplicados por si acaso
+                                    const existingIds = new Set((newData.posts?.data || []).map(p => p.id));
+                                    const uniqueNew = (newItems as Post[]).filter(p => !existingIds.has(p.id));
+                                    
+                                    newData.posts = {
+                                        data: [...(newData.posts?.data || []), ...uniqueNew], // Spread operator para acumular
+                                        paging: response.paging
+                                    };
+                                } else {
+                                    if (!newData.instagram_data) return prevData;
+                                    const existingIds = new Set((newData.instagram_data.media.data || []).map(p => p.id));
+                                    const uniqueNew = (newItems as InstagramMedia[]).filter(p => !existingIds.has(p.id));
+
+                                    newData.instagram_data = {
+                                        ...newData.instagram_data,
+                                        media: {
+                                            data: [...(newData.instagram_data.media.data || []), ...uniqueNew],
+                                            paging: response.paging
+                                        }
+                                    };
+                                }
+                                return newData;
+                            });
+
+                            nextCursor = response.paging?.cursors?.after;
+                            if (!nextCursor) hasMore = false;
+                            
+                            resolve();
+                        }
+                    );
+                });
+
+                await sleep(300); // Pequeña pausa para ser amigable con la API
+            }
+        } catch (err) {
+            console.error(err);
+        } finally {
+            setLoading(false);
+        }
+    }, [pageId, instagramId, pageAccessToken, data]);
+
     const fetchPageData = useCallback((pId: string, token: string) => {
         const fields = [
             'id',
@@ -61,7 +178,7 @@ export const useFacebook = () => {
             'followers_count',
             'fan_count',
             'instagram_business_account',
-            `posts.limit(50){${FACEBOOK_POST_FIELDS}}`
+            `posts.limit(25){${FACEBOOK_POST_FIELDS}}`
         ].join(',');
 
         try {
@@ -158,7 +275,7 @@ export const useFacebook = () => {
             'GET',
             { 
                 access_token: pageAccessToken,
-                limit: 50,
+                limit: 25,
                 [direction === 'next' ? 'after' : 'before']: cursor,
                 fields: fields
             },
@@ -283,6 +400,7 @@ export const useFacebook = () => {
         error,
         loginAndFetch,
         handlePagination,
-        fetchMoreData
+        fetchMoreData,
+        fetchPostsByDate
     };
 };

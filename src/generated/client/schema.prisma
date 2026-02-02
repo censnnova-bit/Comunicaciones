@@ -1,0 +1,51 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../src/generated/client"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+model SocialMetric {
+  id        Int      @id @default(autoincrement())
+  platform  String
+  metric    String
+  value     Float
+  date      DateTime
+  createdAt DateTime @default(now())
+
+  @@unique([platform, metric, date])
+  @@index([platform, date])
+}
+
+model SocialPost {
+  id         String   @id @default(uuid())
+  platformId String // ID original de la red social
+  platform   String // 'facebook' | 'instagram'
+  content    String? // Contenido del post (mensaje o caption)
+  type       String? // Tipo de post (video, imagen, status)
+  url        String? // Permalink
+  image      String? // URL de la imagen/media
+  postedAt   DateTime // Fecha de publicación original
+
+  // Métricas (Se actualizan con cada sincronización)
+  likes       Int @default(0)
+  comments    Int @default(0)
+  shares      Int @default(0)
+  impressions Int @default(0)
+  engagement  Int @default(0) // Calculated or fetched
+
+  lastSyncAt DateTime @default(now())
+
+  @@unique([platform, platformId]) // Evita duplicar el mismo post
+  @@index([postedAt, platform]) // Optimiza búsquedas por fecha y red
+}

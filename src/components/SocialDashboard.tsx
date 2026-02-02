@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Loader2, Facebook, Camera, FileText } from 'lucide-react';
 import { useFacebook } from '@/hooks/useFacebook';
 import { InstagramSection } from '@/components/dashboard/InstagramSection';
@@ -15,6 +15,102 @@ export default function SocialDashboard() {
   const { data: twitterData, loading: twitterLoading, error: twitterError, fetchTwitterData } = useTwitter();
   const [activeTab, setActiveTab] = useState<'facebook' | 'instagram' | 'report' | 'twitter'>('facebook');
   const [twitterUsername, setTwitterUsername] = useState('CENSGrupoEPM');
+
+  // Efecto para sincronizar datos con la BD cuando se cargan desde Facebook
+  useEffect(() => {
+    if (data) {
+      const syncMetrics = async () => {
+        try {
+          const today = new Date();
+          const normalizedDate = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+
+          const metricsToSync = [];
+
+          // Facebook Metrics (data is FacebookData)
+          metricsToSync.push({
+            platform: 'facebook',
+            metric: 'followers',
+            value: data.likes?.followers_count || data.fan_count || 0,
+            date: normalizedDate
+          });
+          metricsToSync.push({
+             platform: 'facebook',
+             metric: 'likes',
+             value: data.fan_count || 0,
+             date: normalizedDate
+          });
+
+          // Procesar Posts de Facebook
+          if (data.posts && data.posts.data) {
+              const fbPosts = data.posts.data.map((post: any) => ({
+                  platformId: post.id,
+                  platform: 'facebook',
+                  content: post.message || post.story,
+                  type: post.status_type || 'status',
+                  url: post.permalink_url,
+                  image: post.full_picture,
+                  postedAt: post.created_time, // String ISO
+                  likes: post.reactions?.summary?.total_count || 0,
+                  comments: post.comments?.summary?.total_count || 0,
+                  shares: post.shares?.count || 0,
+                  impressions: post.insights?.data?.find((i: any) => i.name === 'post_impressions_unique')?.values[0]?.value || 0,
+                  engagement: post.insights?.data?.find((i: any) => i.name === 'post_engagements')?.values[0]?.value || 0
+              }));
+              postsToSync.push(...fbPosts);
+          }
+
+          // Instagram Metrics
+          if (data.instagram_data) {
+            const igData = data.instagram_data;
+            metricsToSync.push({
+              platform: 'instagram',
+              metric: 'followers',
+              value: igData.followers_count || 0,
+              date: normalizedDate
+            });
+             metricsToSync.push({
+              platform: 'instagram',
+              metric: 'media_count',
+              value: igData.media?.data?.length || 0, // Approx count from loaded data
+              date: normalizedDate
+            });
+
+            // Procesar Media de Instagram
+            if (igData.media && igData.media.data) {
+                const igPosts = igData.media.data.map((media: any) => ({
+                    platformId: media.id,
+                    platform: 'instagram',
+                    content: media.caption,
+                    type: media.media_type,
+                    url: media.permalink,
+                    image: media.media_url,
+                    postedAt: media.timestamp,
+                    likes: media.like_count || 0,
+                    comments: media.comments_count || 0,
+                    shares: 0,
+                    impressions: 0, 
+                    engagement: (media.like_count || 0) + (media.comments_count || 0)
+                }));
+                postsToSync.push(...igPosts);
+            }
+          }
+
+          if (metricsToSync.length > 0 || postsToSync.length > 0) {
+            await fetch('/api/cron/sync', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ metrics: metricsToSync, posts: postsToSync })
+            });
+            console.log(`✅ Sincronizado: ${metricsToSync.length} métricas y ${postsToSync.length} posts.`);
+          }
+        } catch (err) {
+          console.error('Error sincronizando métricas en background:', err);
+        }
+      };
+
+      syncMetrics();
+    }
+  }, [data]);
 
   const handleTwitterFetch = () => {
     if (twitterUsername) fetchTwitterData(twitterUsername);
