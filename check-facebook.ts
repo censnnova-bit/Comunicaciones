@@ -12,9 +12,9 @@ async function checkStep(name: string, fn: () => Promise<boolean>) {
         } else {
             console.log('wc FALLÓ');
         }
-    } catch (e: any) {
+    } catch (e: unknown) {
         console.log('❌ ERROR');
-        console.error('   ' + e.message);
+        console.error('   ' + (e instanceof Error ? e.message : String(e)));
     }
 }
 
